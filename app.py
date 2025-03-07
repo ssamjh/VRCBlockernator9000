@@ -902,14 +902,15 @@ class VRChatTrackerApp:
     def _update_members_list(self, members):
         self.members_list.delete(0, tk.END)
 
-        # Store members data for tooltips
-        self.members_data = members
-
         # Clear existing tooltips
         if hasattr(self, "tooltips"):
             for tooltip in self.tooltips:
-                tooltip.hidetip()
+                if hasattr(tooltip, "hidetip"):
+                    tooltip.hidetip()
         self.tooltips = []
+
+        # Create a mapping of list indices to user IDs
+        self.listbox_id_map = {}
 
         if not members:
             self.members_list.insert(tk.END, "No users found in this instance")
@@ -923,7 +924,7 @@ class VRChatTrackerApp:
                 ),
             )
 
-            for member in sorted_members:
+            for i, member in enumerate(sorted_members):
                 if member.get("is_self"):
                     prefix = "👤 "  # Self
                 else:
@@ -932,18 +933,11 @@ class VRChatTrackerApp:
                 display_text = f"{prefix}{member['display_name']} ({member['status']})"
                 self.members_list.insert(tk.END, display_text)
 
-                # Create tooltip with user ID if available
+                # Store the mapping of index to user_id
                 if "user_id" in member and member["user_id"]:
-                    index = self.members_list.size() - 1
-                    tooltip_text = f"User ID: {member['user_id']}"
-                    # Create tooltip using itemcget to get the list item
-                    self.members_list.itemconfig(
-                        index, bg=self.members_list.cget("bg")
-                    )  # Ensure background color
-
-                    # Since we can't directly bind to list items, we need to use event detection in the main list
-                    # We'll need to track which item is currently hovered
-                    self.tooltips.append(ToolTip(self.members_list, tooltip_text))
+                    self.listbox_id_map[self.members_list.size() - 1] = member[
+                        "user_id"
+                    ]
 
     def setup_tooltips(self):
         """Set up event handling for list item tooltips"""
@@ -955,21 +949,20 @@ class VRChatTrackerApp:
 
     def update_list_tooltip(self, event):
         """Update tooltip based on which list item is under the cursor"""
-        if not hasattr(self, "members_data"):
+        if not hasattr(self, "listbox_id_map"):
             return
 
         # Get the item index under the cursor
         index = self.members_list.nearest(event.y)
-        if 0 <= index < len(self.members_data):
-            member = self.members_data[index]
-            if "user_id" in member and member["user_id"]:
-                if self.active_tooltip is None:
-                    self.active_tooltip = ToolTip(
-                        self.members_list, f"User ID: {member['user_id']}"
-                    )
-                else:
-                    self.active_tooltip.text = f"User ID: {member['user_id']}"
-                    self.active_tooltip.showtip()
+
+        # Check if item is visible and has an ID
+        if index in self.listbox_id_map:
+            user_id = self.listbox_id_map[index]
+            if self.active_tooltip is None:
+                self.active_tooltip = ToolTip(self.members_list, f"User ID: {user_id}")
+            else:
+                self.active_tooltip.text = f"User ID: {user_id}"
+                self.active_tooltip.showtip()
         else:
             if self.active_tooltip:
                 self.active_tooltip.hidetip()
