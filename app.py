@@ -15,74 +15,6 @@ import re
 import glob
 
 
-class ToolTip:
-    """Create a tooltip for a given widget"""
-
-    def __init__(self, widget, text=""):
-        self.widget = widget
-        self.text = text
-        self.tipwindow = None
-        self.id = None
-        self.x = self.y = 0
-        self.widget.bind("<Enter>", self.enter)
-        self.widget.bind("<Leave>", self.leave)
-        self.widget.bind("<Motion>", self.motion)
-
-    def enter(self, event=None):
-        """Display the tooltip when mouse enters widget"""
-        self.schedule()
-
-    def leave(self, event=None):
-        """Hide the tooltip when mouse leaves widget"""
-        self.unschedule()
-        self.hidetip()
-
-    def motion(self, event=None):
-        """Update position when mouse moves"""
-        self.x, self.y = event.x, event.y
-        if self.tipwindow:
-            self.hidetip()
-            self.schedule()
-
-    def schedule(self):
-        """Schedule showing the tooltip"""
-        self.unschedule()
-        self.id = self.widget.after(500, self.showtip)
-
-    def unschedule(self):
-        """Unschedule showing the tooltip"""
-        if self.id:
-            self.widget.after_cancel(self.id)
-            self.id = None
-
-    def showtip(self):
-        """Display text in tooltip window"""
-        if self.tipwindow or not self.text:
-            return
-        x = self.widget.winfo_rootx() + self.x + 20
-        y = self.widget.winfo_rooty() + self.y + 10
-        self.tipwindow = tw = tk.Toplevel(self.widget)
-        tw.wm_overrideredirect(True)
-        tw.wm_geometry(f"+{x}+{y}")
-        label = ttk.Label(
-            tw,
-            text=self.text,
-            justify=tk.LEFT,
-            background="#ffffe0",
-            relief=tk.SOLID,
-            borderwidth=1,
-            wraplength=250,
-        )
-        label.pack(ipadx=1)
-
-    def hidetip(self):
-        """Hide the tooltip"""
-        tw = self.tipwindow
-        self.tipwindow = None
-        if tw:
-            tw.destroy()
-
-
 class VRChatTrackerApp:
     def __init__(self, root):
         self.root = root
@@ -107,9 +39,6 @@ class VRChatTrackerApp:
         # First try to restore from auth token, then fall back to cookies
         if not self.try_restore_from_token():
             self.try_restore_session()
-
-        self.tooltips = []
-        self.setup_tooltips()
 
     def setup_ui(self):
         # Main frame
@@ -902,13 +831,6 @@ class VRChatTrackerApp:
     def _update_members_list(self, members):
         self.members_list.delete(0, tk.END)
 
-        # Clear existing tooltips
-        if hasattr(self, "tooltips"):
-            for tooltip in self.tooltips:
-                if hasattr(tooltip, "hidetip"):
-                    tooltip.hidetip()
-        self.tooltips = []
-
         # Create a mapping of list indices to user IDs
         self.listbox_id_map = {}
 
@@ -930,42 +852,15 @@ class VRChatTrackerApp:
                 else:
                     prefix = "🧍 "  # Other user
 
-                display_text = f"{prefix}{member['display_name']} ({member['status']})"
+                # Include the user_id in the display text
+                display_text = f"{prefix}{member['display_name']} - {member.get('user_id', 'unknown')} ({member['status']})"
                 self.members_list.insert(tk.END, display_text)
 
-                # Store the mapping of index to user_id
+                # Still store the mapping of index to user_id (keep this if needed elsewhere)
                 if "user_id" in member and member["user_id"]:
                     self.listbox_id_map[self.members_list.size() - 1] = member[
                         "user_id"
                     ]
-
-    def setup_tooltips(self):
-        """Set up event handling for list item tooltips"""
-        self.list_tooltips = {}  # Map of index -> tooltip
-        self.active_tooltip = None
-
-        # Bind mouse movement to monitor which list item is under the cursor
-        self.members_list.bind("<Motion>", self.update_list_tooltip)
-
-    def update_list_tooltip(self, event):
-        """Update tooltip based on which list item is under the cursor"""
-        if not hasattr(self, "listbox_id_map"):
-            return
-
-        # Get the item index under the cursor
-        index = self.members_list.nearest(event.y)
-
-        # Check if item is visible and has an ID
-        if index in self.listbox_id_map:
-            user_id = self.listbox_id_map[index]
-            if self.active_tooltip is None:
-                self.active_tooltip = ToolTip(self.members_list, f"User ID: {user_id}")
-            else:
-                self.active_tooltip.text = f"User ID: {user_id}"
-                self.active_tooltip.showtip()
-        else:
-            if self.active_tooltip:
-                self.active_tooltip.hidetip()
 
 
 if __name__ == "__main__":
