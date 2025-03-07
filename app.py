@@ -615,80 +615,80 @@ class VRChatTrackerApp:
             return None
 
     def parse_users_from_log(self):
-        """Parse VRChat log to extract users in the current instance"""
+        """Parse VRChat log to extract users currently in the instance"""
         log_file = self.find_vrchat_log_file()
         if not log_file:
             return []
 
-        instance_pattern = re.compile(r"Joining or Creating Room: (.+)")
-        user_pattern = re.compile(r"OnPlayerJoined\s+(.+)")
-        leave_pattern = re.compile(r"OnPlayerLeft\s+(.+)")
+        # Pattern for detecting when we join a new instance
+        instance_start_pattern = re.compile(
+            r"\[Behaviour\] Joining or Creating Room: (.+)"
+        )
 
-        current_instance = None
-        instance_users = {}  # Change to dict to store user_id with name
+        # Patterns for player joins and leaves
+        join_pattern = re.compile(
+            r"\[Behaviour\] OnPlayerJoined (.+?) (?:\S+ )?\(usr_([a-f0-9-]+)\)"
+        )
+        leave_pattern = re.compile(
+            r"\[Behaviour\] OnPlayerLeft (.+?) (?:\(usr_([a-f0-9-]+)\))?"
+        )
 
         try:
             with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
+                log_content = f.read()
 
-                # Find the last (most recent) instance join
-                for line in reversed(lines):
-                    instance_match = instance_pattern.search(line)
-                    if instance_match:
-                        current_instance = instance_match.group(1)
-                        break
+            # Split log into lines
+            lines = log_content.splitlines()
 
-                if not current_instance:
-                    return []
+            # Find the last instance join
+            instance_start_index = -1
+            current_instance = None
 
-                # Now parse the log for users in this instance
-                in_target_instance = False
-                for line in lines:
-                    # Check for instance change
-                    instance_match = instance_pattern.search(line)
-                    if instance_match:
-                        found_instance = instance_match.group(1)
-                        if found_instance == current_instance:
-                            in_target_instance = True
-                            # Reset user list when we find our target instance
-                            instance_users = {}
-                        else:
-                            # We found a different instance after our target instance
-                            if in_target_instance:
-                                break
+            for i, line in enumerate(reversed(lines)):
+                instance_match = instance_start_pattern.search(line)
+                if instance_match:
+                    current_instance = instance_match.group(1)
+                    instance_start_index = len(lines) - i - 1
+                    break
 
-                    # If we're not in the target instance, skip
-                    if not in_target_instance:
-                        continue
+            if instance_start_index == -1:
+                print("No instance join found in log file")
+                return []
 
-                    # Check for players joining
-                    user_match = user_pattern.search(line)
-                    if user_match:
-                        full_username = user_match.group(1).strip()
-                        # Extract user ID if present
-                        user_id = None
-                        username = full_username
-                        id_match = re.search(r"\((usr_[a-f0-9-]+)\)", full_username)
-                        if id_match:
-                            user_id = id_match.group(1)
-                            username = full_username.split("(usr_")[0].strip()
+            print(f"Found instance: {current_instance} at line {instance_start_index}")
 
-                        instance_users[username] = user_id
+            # Process all events after joining the instance
+            current_players = {}  # username -> user_id
 
-                    # Check for players leaving
-                    leave_match = leave_pattern.search(line)
-                    if leave_match:
-                        full_username = leave_match.group(1).strip()
-                        # Extract username without ID
-                        username = full_username
-                        if "(usr_" in full_username:
-                            username = full_username.split("(usr_")[0].strip()
+            for line in lines[instance_start_index:]:
+                # Check for another instance join (which would reset everything)
+                if instance_start_pattern.search(
+                    line
+                ) and instance_start_index != lines.index(line):
+                    # Reset players when joining a new instance
+                    current_players = {}
+                    continue
 
-                        if username in instance_users:
-                            del instance_users[username]
+                # Check for player joins
+                join_match = join_pattern.search(line)
+                if join_match:
+                    username = join_match.group(1).strip()
+                    user_id = "usr_" + join_match.group(2)
+                    current_players[username] = user_id
+                    print(f"Player joined: {username} ({user_id})")
+                    continue
 
-                # Return list of tuples with (name, id)
-                return [(name, user_id) for name, user_id in instance_users.items()]
+                # Check for player leaves
+                leave_match = leave_pattern.search(line)
+                if leave_match:
+                    username = leave_match.group(1).strip()
+                    if username in current_players:
+                        print(f"Player left: {username}")
+                        del current_players[username]
+
+            # Return the current players in the instance
+            return [(name, uid) for name, uid in current_players.items()]
+
         except Exception as e:
             print(f"Error parsing log file: {e}")
             import traceback
