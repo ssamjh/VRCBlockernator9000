@@ -11,6 +11,76 @@ from vrchatapi.api import authentication_api, worlds_api, users_api
 from vrchatapi.exceptions import UnauthorizedException
 from vrchatapi.models.two_factor_auth_code import TwoFactorAuthCode
 from vrchatapi.models.two_factor_email_code import TwoFactorEmailCode
+import re
+import glob
+
+
+class ToolTip:
+    """Create a tooltip for a given widget"""
+
+    def __init__(self, widget, text=""):
+        self.widget = widget
+        self.text = text
+        self.tipwindow = None
+        self.id = None
+        self.x = self.y = 0
+        self.widget.bind("<Enter>", self.enter)
+        self.widget.bind("<Leave>", self.leave)
+        self.widget.bind("<Motion>", self.motion)
+
+    def enter(self, event=None):
+        """Display the tooltip when mouse enters widget"""
+        self.schedule()
+
+    def leave(self, event=None):
+        """Hide the tooltip when mouse leaves widget"""
+        self.unschedule()
+        self.hidetip()
+
+    def motion(self, event=None):
+        """Update position when mouse moves"""
+        self.x, self.y = event.x, event.y
+        if self.tipwindow:
+            self.hidetip()
+            self.schedule()
+
+    def schedule(self):
+        """Schedule showing the tooltip"""
+        self.unschedule()
+        self.id = self.widget.after(500, self.showtip)
+
+    def unschedule(self):
+        """Unschedule showing the tooltip"""
+        if self.id:
+            self.widget.after_cancel(self.id)
+            self.id = None
+
+    def showtip(self):
+        """Display text in tooltip window"""
+        if self.tipwindow or not self.text:
+            return
+        x = self.widget.winfo_rootx() + self.x + 20
+        y = self.widget.winfo_rooty() + self.y + 10
+        self.tipwindow = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        label = ttk.Label(
+            tw,
+            text=self.text,
+            justify=tk.LEFT,
+            background="#ffffe0",
+            relief=tk.SOLID,
+            borderwidth=1,
+            wraplength=250,
+        )
+        label.pack(ipadx=1)
+
+    def hidetip(self):
+        """Hide the tooltip"""
+        tw = self.tipwindow
+        self.tipwindow = None
+        if tw:
+            tw.destroy()
 
 
 class VRChatTrackerApp:
@@ -37,6 +107,9 @@ class VRChatTrackerApp:
         # First try to restore from auth token, then fall back to cookies
         if not self.try_restore_from_token():
             self.try_restore_session()
+
+        self.tooltips = []
+        self.setup_tooltips()
 
     def setup_ui(self):
         # Main frame
@@ -124,6 +197,12 @@ class VRChatTrackerApp:
         self.members_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         scrollbar.config(command=self.members_list.yview)
+
+        # Add a debug button to test log parsing (add near the bottom of setup_ui)
+        debug_button = ttk.Button(
+            instance_frame, text="Debug: Test Log Parsing", command=self.test_parse_log
+        )
+        debug_button.pack(pady=5)
 
     def encode_password(self, password):
         return base64.b64encode(password.encode()).decode()
@@ -517,6 +596,135 @@ class VRChatTrackerApp:
         self.status_var.set("Not logged in")
         messagebox.showerror("Login Failed", message)
 
+    def find_vrchat_log_file(self):
+        """Find the most recent VRChat log file"""
+        # Default log directory paths for different OSes
+        if os.name == "nt":  # Windows
+            log_dir = os.path.expandvars(
+                r"%USERPROFILE%\AppData\LocalLow\VRChat\VRChat"
+            )
+        elif os.name == "posix":  # macOS/Linux
+            log_dir = os.path.expanduser("~/.config/unity3d/VRChat/VRChat")
+        else:
+            self.debug_log(f"Unsupported OS: {os.name}")
+            return None
+
+        self.debug_log(f"Looking for VRChat logs in: {log_dir}")
+
+        # Find the most recent log file
+        try:
+            log_files = glob.glob(os.path.join(log_dir, "output_log_*.txt"))
+            if not log_files:
+                self.debug_log("No log files found!")
+                return None
+
+            # Sort by modification time (most recent first)
+            latest_log = max(log_files, key=os.path.getmtime)
+            self.debug_log(f"Found log file: {latest_log}")
+            return latest_log
+        except Exception as e:
+            self.debug_log(f"Error finding VRChat log file: {e}")
+            return None
+
+    def parse_users_from_log(self):
+        """Parse VRChat log to extract users in the current instance"""
+        self.debug_log(f"Parsing logs for current instance")
+        log_file = self.find_vrchat_log_file()
+        if not log_file:
+            self.debug_log("No log file found, can't parse users")
+            return []
+
+        users = set()  # Use a set to avoid duplicates
+        instance_pattern = re.compile(r"Joining or Creating Room: (.+)")
+        user_pattern = re.compile(r"OnPlayerJoined\s+(.+)")
+        leave_pattern = re.compile(r"OnPlayerLeft\s+(.+)")
+
+        current_instance = None
+        instance_users = {}  # Change to dict to store user_id with name
+
+        try:
+            self.debug_log(f"Analyzing log file: {log_file}")
+
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+
+                # Find the last (most recent) instance join
+                for line in reversed(lines):
+                    instance_match = instance_pattern.search(line)
+                    if instance_match:
+                        current_instance = instance_match.group(1)
+                        self.debug_log(
+                            f"Found most recent instance: {current_instance}"
+                        )
+                        break
+
+                if not current_instance:
+                    self.debug_log("No instance found in logs")
+                    return []
+
+                # Now parse the log for users in this instance
+                in_target_instance = False
+                for line in lines:
+                    # Check for instance change
+                    instance_match = instance_pattern.search(line)
+                    if instance_match:
+                        found_instance = instance_match.group(1)
+                        if found_instance == current_instance:
+                            in_target_instance = True
+                            # Reset user list when we find our target instance
+                            instance_users = {}
+                            self.debug_log(
+                                f"Parsing users for instance: {current_instance}"
+                            )
+                        else:
+                            # We found a different instance after our target instance
+                            if in_target_instance:
+                                break
+
+                    # If we're not in the target instance, skip
+                    if not in_target_instance:
+                        continue
+
+                    # Check for players joining
+                    user_match = user_pattern.search(line)
+                    if user_match:
+                        full_username = user_match.group(1).strip()
+                        # Extract user ID if present
+                        user_id = None
+                        username = full_username
+                        id_match = re.search(r"\((usr_[a-f0-9-]+)\)", full_username)
+                        if id_match:
+                            user_id = id_match.group(1)
+                            username = full_username.split("(usr_")[0].strip()
+
+                        instance_users[username] = user_id
+                        self.debug_log(
+                            f"Found user in instance: {username} with ID: {user_id}"
+                        )
+
+                    # Check for players leaving
+                    leave_match = leave_pattern.search(line)
+                    if leave_match:
+                        full_username = leave_match.group(1).strip()
+                        # Extract username without ID
+                        username = full_username
+                        if "(usr_" in full_username:
+                            username = full_username.split("(usr_")[0].strip()
+
+                        if username in instance_users:
+                            del instance_users[username]
+                            self.debug_log(f"User left instance: {username}")
+
+                self.debug_log(f"Found {len(instance_users)} users in current instance")
+                # Return list of tuples with (name, id)
+                return [(name, user_id) for name, user_id in instance_users.items()]
+        except Exception as e:
+            self.debug_log(f"Error parsing log file: {e}")
+            import traceback
+
+            self.debug_log(traceback.format_exc())
+            return []
+
     def toggle_tracking(self):
         if not self.tracking:
             self.start_tracking()
@@ -679,36 +887,85 @@ class VRChatTrackerApp:
             return None
 
     def _get_instance_users(self, location):
+        """Get users in the current instance"""
+        self.debug_log(f"Getting users for location: {location}")
+
         # Get users in the same instance using friends API
         friends_api = vrchatapi.api.friends_api.FriendsApi(self.api_client)
-        users_api_instance = users_api.UsersApi(self.api_client)
         instance_users = []
 
         try:
             # First add the current user
+            self.debug_log(f"Adding self: {self.current_user.display_name}")
             instance_users.append(
                 {
                     "display_name": self.current_user.display_name,
+                    "user_id": self.current_user.id,
                     "status": "Self",
                     "is_self": True,
+                    "is_friend": True,
                 }
             )
 
             # Get online friends
+            self.debug_log("Getting online friends...")
             friends = friends_api.get_friends(offline=False)
+            self.debug_log(f"Found {len(friends)} online friends")
+
+            # Get friend display names for later comparison
+            friend_names = {
+                friend.display_name
+                for friend in friends
+                if friend.location and friend.location == location
+            }
+            friend_names.add(self.current_user.display_name)  # Add self to friend names
+            self.debug_log(f"Friends in this instance: {friend_names}")
 
             # Check which friends are in the same instance
+            friends_in_instance = 0
             for friend in friends:
                 if friend.location and friend.location == location:
+                    friends_in_instance += 1
                     instance_users.append(
                         {
                             "display_name": friend.display_name,
+                            "user_id": friend.id,
                             "status": friend.status,
                             "is_self": False,
+                            "is_friend": True,
                         }
                     )
+            self.debug_log(f"Added {friends_in_instance} friends from API")
+
+            # Parse log file for additional users
+            log_users = self.parse_users_from_log()
+            self.debug_log(f"Found {len(log_users)} users in log")
+
+            log_users_added = 0
+            for username, user_id in log_users:
+                # Skip if already added (self or friend)
+                if username in friend_names:
+                    self.debug_log(f"Skipping {username} (already in friends list)")
+                    continue
+
+                log_users_added += 1
+                instance_users.append(
+                    {
+                        "display_name": username,
+                        "user_id": user_id,
+                        "status": "In Instance",
+                        "is_self": False,
+                        "is_friend": False,
+                    }
+                )
+            self.debug_log(f"Added {log_users_added} additional users from logs")
+            self.debug_log(f"Total users in instance: {len(instance_users)}")
+
         except Exception as e:
-            print(f"Error getting instance users: {str(e)}")
+            self.debug_log(f"Error getting instance users: {str(e)}")
+            import traceback
+
+            self.debug_log(traceback.format_exc())
 
         return instance_users
 
@@ -716,15 +973,143 @@ class VRChatTrackerApp:
         self.instance_var.set(info)
 
     def _update_members_list(self, members):
+        self.debug_log(f"Updating members list with {len(members)} users")
         self.members_list.delete(0, tk.END)
+        
+        # Store members data for tooltips
+        self.members_data = members
+
+        # Clear existing tooltips
+        if hasattr(self, "tooltips"):
+            for tooltip in self.tooltips:
+                tooltip.hidetip()
+        self.tooltips = []
+
         if not members:
+            self.debug_log("No members to display")
             self.members_list.insert(tk.END, "No users found in this instance")
         else:
-            for member in members:
-                prefix = "👤 " if member.get("is_self") else "👥 "
-                self.members_list.insert(
-                    tk.END, f"{prefix}{member['display_name']} ({member['status']})"
-                )
+            # Sort members: self first, then friends, then others
+            sorted_members = sorted(
+                members,
+                key=lambda x: (
+                    0
+                    if x.get("is_self", False)
+                    else (1 if x.get("is_friend", False) else 2)
+                ),
+            )
+
+            for member in sorted_members:
+                if member.get("is_self"):
+                    prefix = "👤 "  # Self
+                    self.debug_log(f"Adding self user: {member['display_name']}")
+                elif member.get("is_friend", False):
+                    prefix = "👥 "  # Friend
+                    self.debug_log(f"Adding friend: {member['display_name']}")
+                else:
+                    prefix = "🧍 "  # Other user from logs
+                    self.debug_log(f"Adding other user: {member['display_name']}")
+
+                display_text = f"{prefix}{member['display_name']} ({member['status']})"
+                self.members_list.insert(tk.END, display_text)
+
+                # Create tooltip with user ID if available
+                if "user_id" in member and member["user_id"]:
+                    index = self.members_list.size() - 1
+                    tooltip_text = f"User ID: {member['user_id']}"
+                    # Create tooltip using itemcget to get the list item
+                    self.members_list.itemconfig(
+                        index, bg=self.members_list.cget("bg")
+                    )  # Ensure background color
+
+                    # Since we can't directly bind to list items, we need to use event detection in the main list
+                    # We'll need to track which item is currently hovered
+                    self.tooltips.append(ToolTip(self.members_list, tooltip_text))
+
+    def setup_tooltips(self):
+        """Set up event handling for list item tooltips"""
+        self.list_tooltips = {}  # Map of index -> tooltip
+        self.active_tooltip = None
+        
+        # Bind mouse movement to monitor which list item is under the cursor
+        self.members_list.bind("<Motion>", self.update_list_tooltip)
+        
+    def update_list_tooltip(self, event):
+        """Update tooltip based on which list item is under the cursor"""
+        if not hasattr(self, 'members_data'):
+            return
+            
+        # Get the item index under the cursor
+        index = self.members_list.nearest(event.y)
+        if 0 <= index < len(self.members_data):
+            member = self.members_data[index]
+            if 'user_id' in member and member['user_id']:
+                if self.active_tooltip is None:
+                    self.active_tooltip = ToolTip(self.members_list, f"User ID: {member['user_id']}")
+                else:
+                    self.active_tooltip.text = f"User ID: {member['user_id']}"
+                    self.active_tooltip.showtip()
+        else:
+            if self.active_tooltip:
+                self.active_tooltip.hidetip()
+
+    def debug_log(self, message):
+        """Print debug messages to console with timestamp"""
+        timestamp = time.strftime("%H:%M:%S", time.localtime())
+        print(f"[DEBUG {timestamp}] {message}")
+
+    def test_parse_log(self):
+        """Test function to manually check log file and parsing"""
+        self.debug_log("=== TESTING LOG PARSING ===")
+        log_file = self.find_vrchat_log_file()
+
+        if not log_file:
+            self.debug_log("No log file found!")
+            return
+
+        self.debug_log(f"Analyzing log file: {log_file}")
+
+        # Look for all instances and users mentioned in the log
+        instance_pattern = re.compile(r"Joining or Creating Room: (.+)")
+        user_pattern = re.compile(r"OnPlayerJoined\s+(.+)")
+
+        instances = []
+        users = {}
+
+        try:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                current_instance = None
+                for i, line in enumerate(f):
+                    if i % 10000 == 0:
+                        self.debug_log(f"Processing line {i}...")
+
+                    # Check for instance references
+                    instance_match = instance_pattern.search(line)
+                    if instance_match:
+                        current_instance = instance_match.group(1)
+                        instances.append(current_instance)
+                        users[current_instance] = set()
+                        self.debug_log(f"Found instance: {current_instance}")
+
+                    # Check for user join events
+                    if current_instance:
+                        user_match = user_pattern.search(line)
+                        if user_match:
+                            username = user_match.group(1).strip()
+                            users[current_instance].add(username)
+
+            self.debug_log(f"Found {len(instances)} instances in log:")
+            for idx, instance in enumerate(instances):
+                user_count = len(users.get(instance, []))
+                self.debug_log(f"{idx+1}. Instance: '{instance}' ({user_count} users)")
+                if user_count > 0:
+                    self.debug_log(f"   Users: {', '.join(users.get(instance, []))}")
+
+        except Exception as e:
+            self.debug_log(f"Error in test parse: {str(e)}")
+            import traceback
+
+            self.debug_log(traceback.format_exc())
 
 
 if __name__ == "__main__":
