@@ -13,6 +13,10 @@ from vrchatapi.models.two_factor_auth_code import TwoFactorAuthCode
 from vrchatapi.models.two_factor_email_code import TwoFactorEmailCode
 import re
 import glob
+import requests
+from PIL import Image, ImageTk
+from io import BytesIO
+from vrchatapi.api import avatars_api
 
 
 class VRChatTrackerApp:
@@ -29,6 +33,8 @@ class VRChatTrackerApp:
         self.credentials_file = "vrc_credentials.json"
         self.cookies_file = "vrc_cookies.pkl"
         self.auth_token_file = "vrc_auth_token.json"  # New file for auth tokens
+        self.blocked_avatars_file = "blocked_avatars.json"
+        self.blocked_avatars = self.load_blocked_avatars()
 
         # Auth token storage
         self.auth_token = None
@@ -126,6 +132,8 @@ class VRChatTrackerApp:
         self.members_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         scrollbar.config(command=self.members_list.yview)
+
+        self.members_list.bind("<Double-1>", self.on_user_click)
 
     def encode_password(self, password):
         return base64.b64encode(password.encode()).decode()
@@ -861,6 +869,187 @@ class VRChatTrackerApp:
                     self.listbox_id_map[self.members_list.size() - 1] = member[
                         "user_id"
                     ]
+
+    def load_blocked_avatars(self):
+        """Load the list of blocked avatar IDs from a file"""
+        if os.path.exists(self.blocked_avatars_file):
+            try:
+                with open(self.blocked_avatars_file, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading blocked avatars: {str(e)}")
+        return []
+
+    def save_blocked_avatars(self):
+        """Save the list of blocked avatar IDs to a file"""
+        try:
+            with open(self.blocked_avatars_file, "w") as f:
+                json.dump(self.blocked_avatars, f)
+        except Exception as e:
+            print(f"Error saving blocked avatars: {str(e)}")
+
+    def block_avatar(self, avatar_id):
+        """Add an avatar ID to the blocked list"""
+        if avatar_id and avatar_id not in self.blocked_avatars:
+            self.blocked_avatars.append(avatar_id)
+            self.save_blocked_avatars()
+            return True
+        return False
+
+    def on_user_click(self, event):
+        """Handle clicks on users in the members list"""
+        # Get the selected index
+        index = self.members_list.nearest(event.y)
+        if index >= 0 and index < self.members_list.size():
+            # Get the user ID from the map
+            user_id = self.listbox_id_map.get(index)
+            if user_id:
+                # Show user details in a popup
+                self.show_user_details(user_id)
+
+    def show_user_details(self, user_id):
+        """Show detailed information about a user in a popup window"""
+        if not self.api_client:
+            messagebox.showerror("Error", "You must be logged in to view user details")
+            return
+
+        try:
+            # Fetch user details
+            users_api_instance = users_api.UsersApi(self.api_client)
+            user = users_api_instance.get_user(user_id)
+
+            # Extract trust rank from tags
+            trust_rank = "Unknown"
+            if user.tags:
+                for tag in user.tags:
+                    if tag.startswith("system_trust_"):
+                        trust_rank = tag.replace("system_trust_", "").title()
+                        break
+
+            # Create popup window
+            popup = tk.Toplevel(self.root)
+            popup.title(f"User Details: {user.display_name}")
+            popup.geometry("400x500")
+            popup.transient(self.root)
+            popup.grab_set()
+
+            # Create frame with padding
+            frame = ttk.Frame(popup, padding="10")
+            frame.pack(fill=tk.BOTH, expand=True)
+
+            # User basic info
+            ttk.Label(
+                frame, text="User Information", font=("TkDefaultFont", 12, "bold")
+            ).pack(anchor=tk.W, pady=(0, 5))
+            ttk.Label(frame, text=f"Display Name: {user.display_name}").pack(
+                anchor=tk.W
+            )
+            ttk.Label(frame, text=f"User ID: {user.id}").pack(anchor=tk.W)
+            ttk.Label(frame, text=f"Trust Rank: {trust_rank}").pack(anchor=tk.W)
+            ttk.Label(frame, text=f"Status: {user.status}").pack(anchor=tk.W)
+
+            # Avatar info
+            ttk.Separator(frame).pack(fill=tk.X, pady=10)
+            ttk.Label(
+                frame, text="Avatar Information", font=("TkDefaultFont", 12, "bold")
+            ).pack(anchor=tk.W, pady=(0, 5))
+
+            # Extract avatar ID from the URL
+            avatar_id = None
+
+            # Check if we have avatar image URL
+            if (
+                hasattr(user, "current_avatar_image_url")
+                and user.current_avatar_image_url
+            ):
+                avatar_image_url = user.current_avatar_image_url
+
+                # Extract the file ID from the URL and convert to avatar ID format
+                import re
+
+                file_id_match = re.search(r"file/file_([a-f0-9-]+)", avatar_image_url)
+                if file_id_match:
+                    file_id = file_id_match.group(1)
+                    avatar_id = f"avtr_{file_id}"
+
+                ttk.Label(frame, text=f"Avatar ID: {avatar_id or 'Unknown'}").pack(
+                    anchor=tk.W
+                )
+
+                # Display avatar thumbnail image
+                if (
+                    hasattr(user, "current_avatar_thumbnail_image_url")
+                    and user.current_avatar_thumbnail_image_url
+                ):
+                    try:
+                        # Create frame for image
+                        img_frame = ttk.Frame(frame)
+                        img_frame.pack(pady=10)
+
+                        # Load and display image using the thumbnail URL
+                        response = requests.get(user.current_avatar_thumbnail_image_url)
+                        img_data = response.content
+                        img = Image.open(BytesIO(img_data))
+                        img = img.resize((200, 200), Image.LANCZOS)
+                        photo_img = ImageTk.PhotoImage(img)
+
+                        # Keep a reference to prevent garbage collection
+                        img_frame.photo_img = photo_img
+
+                        img_label = ttk.Label(img_frame, image=photo_img)
+                        img_label.pack()
+                    except Exception as e:
+                        print(f"Error loading avatar image: {str(e)}")
+                        ttk.Label(
+                            frame, text=f"Error loading avatar image: {str(e)}"
+                        ).pack(anchor=tk.W)
+                else:
+                    ttk.Label(frame, text="No avatar thumbnail available").pack(
+                        anchor=tk.W
+                    )
+
+                # Block avatar button
+                if avatar_id:
+                    is_blocked = avatar_id in self.blocked_avatars
+                    block_btn = ttk.Button(
+                        frame,
+                        text=(
+                            "Remove from Block List"
+                            if is_blocked
+                            else "Add to Block List"
+                        ),
+                        command=lambda: self.toggle_block_avatar(avatar_id, block_btn),
+                    )
+                    block_btn.pack(pady=10)
+            else:
+                ttk.Label(frame, text="No avatar information available").pack(
+                    anchor=tk.W
+                )
+
+            # Close button
+            ttk.Button(frame, text="Close", command=popup.destroy).pack(pady=10)
+
+        except Exception as e:
+            print(f"Error in show_user_details: {str(e)}")
+            import traceback
+
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Failed to get user details: {str(e)}")
+
+    def toggle_block_avatar(self, avatar_id, button):
+        """Toggle blocking state of an avatar"""
+        if avatar_id in self.blocked_avatars:
+            # Remove from block list
+            self.blocked_avatars.remove(avatar_id)
+            self.save_blocked_avatars()
+            button.config(text="Add to Block List")
+            messagebox.showinfo("Avatar Unblocked", "Avatar removed from block list")
+        else:
+            # Add to block list
+            self.blocked_avatars.append(avatar_id)
+            self.save_blocked_avatars()
+            button.config(text="Remove from Block List")
+            messagebox.showinfo("Avatar Blocked", "Avatar added to block list")
 
 
 if __name__ == "__main__":
