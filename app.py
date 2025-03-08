@@ -214,7 +214,7 @@ class VRChatTrackerApp:
                 with open(self.auth_token_file, "w") as f:
                     json.dump(data, f)
 
-                print("Auth cookies saved successfully")
+                # Removed the debug print statement that was causing spam
             except Exception as e:
                 print(f"Error saving auth cookies: {str(e)}")
 
@@ -662,7 +662,7 @@ class VRChatTrackerApp:
 
     def _track_instance(self):
         users_api_instance = users_api.UsersApi(self.api_client)
-        refresh_count = 0
+        last_refresh_time = time.time()  # Track time instead of count
 
         while self.tracking:
             try:
@@ -670,12 +670,13 @@ class VRChatTrackerApp:
                 user = users_api_instance.get_user(self.current_user.id)
 
                 # Periodic token refresh (every 4 hours of tracking)
-                refresh_count += 1
-                if refresh_count >= 8:  # 8 * 30 minutes = 4 hours
+                current_time = time.time()
+                if current_time - last_refresh_time >= 14400:  # 4 hours in seconds
                     # Save the updated cookies/tokens to extend the session
                     self.save_auth_cookies()
                     self.save_auth_token()
-                    refresh_count = 0
+                    last_refresh_time = current_time
+                    print("Auth token refreshed (scheduled 4-hour refresh)")
 
                 # Update instance info
                 if user.location:
@@ -954,8 +955,8 @@ class VRChatTrackerApp:
                 frame, text="Avatar Information", font=("TkDefaultFont", 12, "bold")
             ).pack(anchor=tk.W, pady=(0, 5))
 
-            # Extract avatar ID from the URL
-            avatar_id = None
+            # Extract avatar file ID from the URL
+            avatar_file_id = None
 
             # Check if we have avatar image URL
             if (
@@ -963,16 +964,18 @@ class VRChatTrackerApp:
                 and user.current_avatar_image_url
             ):
                 avatar_image_url = user.current_avatar_image_url
+                print(f"Avatar image URL: {avatar_image_url}")
 
-                # Extract the file ID from the URL and convert to avatar ID format
+                # Extract the file ID from the URL using improved regex
                 import re
 
-                file_id_match = re.search(r"file/file_([a-f0-9-]+)", avatar_image_url)
+                file_id_match = re.search(r"file_([a-f0-9-]+)", avatar_image_url)
                 if file_id_match:
                     file_id = file_id_match.group(1)
-                    avatar_id = f"avtr_{file_id}"
+                    avatar_file_id = f"id_{file_id}"
+                    print(f"Extracted avatar file ID: {avatar_file_id}")
 
-                ttk.Label(frame, text=f"Avatar ID: {avatar_id or 'Unknown'}").pack(
+                ttk.Label(frame, text=f"Avatar File ID: {avatar_file_id or 'Unknown'}").pack(
                     anchor=tk.W
                 )
 
@@ -981,36 +984,100 @@ class VRChatTrackerApp:
                     hasattr(user, "current_avatar_thumbnail_image_url")
                     and user.current_avatar_thumbnail_image_url
                 ):
+                    # Debug information
+                    thumbnail_url = user.current_avatar_thumbnail_image_url
+                    print(f"Attempting to load thumbnail from URL: {thumbnail_url}")
+
                     try:
                         # Create frame for image
                         img_frame = ttk.Frame(frame)
                         img_frame.pack(pady=10)
 
-                        # Load and display image using the thumbnail URL
-                        response = requests.get(user.current_avatar_thumbnail_image_url)
-                        img_data = response.content
-                        img = Image.open(BytesIO(img_data))
-                        img = img.resize((200, 200), Image.LANCZOS)
-                        photo_img = ImageTk.PhotoImage(img)
+                        # Add URL display for debugging
+                        ttk.Label(frame, text="Thumbnail URL:").pack(anchor=tk.W)
+                        url_text = tk.Text(frame, height=3, width=40, wrap=tk.WORD)
+                        url_text.insert(tk.END, thumbnail_url)
+                        url_text.config(state=tk.DISABLED)
+                        url_text.pack(fill=tk.X, pady=(0, 10))
 
-                        # Keep a reference to prevent garbage collection
-                        img_frame.photo_img = photo_img
-
-                        img_label = ttk.Label(img_frame, image=photo_img)
-                        img_label.pack()
+                        # First, get the redirect URL without loading the content
+                        print(f"Fetching redirect for: {thumbnail_url}")
+                        head_response = requests.head(thumbnail_url, allow_redirects=True)
+                        final_url = head_response.url
+                        print(f"Final URL after redirect: {final_url}")
+                        
+                        # Display final URL for debugging
+                        ttk.Label(frame, text="Final URL after redirect:").pack(anchor=tk.W)
+                        final_url_text = tk.Text(frame, height=3, width=40, wrap=tk.WORD)
+                        final_url_text.insert(tk.END, final_url)
+                        final_url_text.config(state=tk.DISABLED)
+                        final_url_text.pack(fill=tk.X, pady=(0, 10))
+                        
+                        # Now fetch the actual image from the final URL
+                        # Use headers that specifically request image content
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0',
+                            'Accept': 'image/jpeg, image/png, image/*'
+                        }
+                        
+                        print(f"Fetching image from: {final_url}")
+                        img_response = requests.get(final_url, headers=headers, stream=True)
+                        print(f"Image response status: {img_response.status_code}")
+                        print(f"Image content type: {img_response.headers.get('Content-Type')}")
+                        
+                        if img_response.status_code == 200:
+                            # Determine file extension from content type
+                            content_type = img_response.headers.get('Content-Type', '')
+                            ext = '.dat'
+                            if 'jpeg' in content_type or 'jpg' in content_type:
+                                ext = '.jpg'
+                            elif 'png' in content_type:
+                                ext = '.png'
+                            
+                            # Save the raw image for debugging
+                            debug_file = f"debug_image{ext}"
+                            with open(debug_file, "wb") as f:
+                                f.write(img_response.content)
+                            print(f"Saved response to {debug_file} ({len(img_response.content)} bytes)")
+                            
+                            # Try to display the image
+                            try:
+                                img = Image.open(BytesIO(img_response.content))
+                                print(f"Image loaded successfully: {img.format}, {img.size}")
+                                img = img.resize((200, 200), Image.LANCZOS)
+                                photo_img = ImageTk.PhotoImage(img)
+                                img_frame.photo_img = photo_img
+                                img_label = ttk.Label(img_frame, image=photo_img)
+                                img_label.pack()
+                                print("Image displayed successfully")
+                            except Exception as img_err:
+                                print(f"PIL error: {str(img_err)}")
+                                # Try an alternative approach - show the image path instead
+                                ttk.Label(
+                                    frame, 
+                                    text=f"Image saved to {debug_file} but could not be displayed."
+                                ).pack(anchor=tk.W)
+                        else:
+                            error_msg = f"Failed to fetch image: HTTP {img_response.status_code}"
+                            print(error_msg)
+                            ttk.Label(frame, text=error_msg).pack(anchor=tk.W)
+                            
                     except Exception as e:
-                        print(f"Error loading avatar image: {str(e)}")
-                        ttk.Label(
-                            frame, text=f"Error loading avatar image: {str(e)}"
-                        ).pack(anchor=tk.W)
+                        error_msg = f"Error loading avatar image: {str(e)}"
+                        print(error_msg)
+                        ttk.Label(frame, text=error_msg).pack(anchor=tk.W)
+                        
+                        import traceback
+                        tb_str = traceback.format_exc()
+                        print(f"Traceback: {tb_str}")
                 else:
                     ttk.Label(frame, text="No avatar thumbnail available").pack(
                         anchor=tk.W
                     )
 
                 # Block avatar button
-                if avatar_id:
-                    is_blocked = avatar_id in self.blocked_avatars
+                if avatar_file_id:
+                    is_blocked = avatar_file_id in self.blocked_avatars
                     block_btn = ttk.Button(
                         frame,
                         text=(
@@ -1018,7 +1085,7 @@ class VRChatTrackerApp:
                             if is_blocked
                             else "Add to Block List"
                         ),
-                        command=lambda: self.toggle_block_avatar(avatar_id, block_btn),
+                        command=lambda: self.toggle_block_avatar(avatar_file_id, block_btn),
                     )
                     block_btn.pack(pady=10)
             else:
@@ -1032,7 +1099,6 @@ class VRChatTrackerApp:
         except Exception as e:
             print(f"Error in show_user_details: {str(e)}")
             import traceback
-
             traceback.print_exc()
             messagebox.showerror("Error", f"Failed to get user details: {str(e)}")
 
