@@ -1,4 +1,8 @@
-vrc_auth_token.json
-vrc_credentials.json
-blocked_avatars.json
-debug_image.png
+vrc_session.json
+settings.json
+processed_users.json
+avatar_blocklist.json
+avatar_name_blocklist.json
+activity_log.txt
+__pycache__/
+*.pyc

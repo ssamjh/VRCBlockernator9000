@@ -1,0 +1,4 @@
+vrchatapi
+requests
+Pillow
+ImageHash
